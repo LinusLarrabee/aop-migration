@@ -45,13 +45,6 @@ public class InsertUniqueIdAspect {
             MDC.put(aopMigrationProps.getUuid(), uniqueId);
             log.info("[InsertUniqueIdAspect] Generated unique id: {}", uniqueId);
 
-            // 将方法的类名和方法名也写入到MDC
-            Signature signature = joinPoint.getSignature();
-            String className = signature.getDeclaringType().getSimpleName();
-            String methodName = signature.getName();
-            String route = className + " " + methodName;
-            MDC.put(aopMigrationProps.getRoute(), route);
-
             // 执行原方法
             return joinPoint.proceed();
 
@@ -61,7 +54,6 @@ public class InsertUniqueIdAspect {
         } finally {
             // 清除MDC中的数据
             MDC.remove(aopMigrationProps.getUuid());
-            MDC.remove(aopMigrationProps.getRoute());
         }
     }
 
