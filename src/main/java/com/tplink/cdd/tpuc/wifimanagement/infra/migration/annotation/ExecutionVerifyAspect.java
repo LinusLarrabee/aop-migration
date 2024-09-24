@@ -1,5 +1,7 @@
 package com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation;
 
+import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.ExecutionVerify;
+import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.RedisUtil;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
@@ -44,7 +46,7 @@ public class ExecutionVerifyAspect {
         String redisKey = uuid + "_" + count;
 
         // 检查 Redis 中是否存在该键值
-        String cachedResult = redisUtil.getValue(redisKey);
+        Object cachedResult = redisUtil.getValue(redisKey);
 
         // 获取方法输入参数
         Object[] args = joinPoint.getArgs();
@@ -52,13 +54,17 @@ public class ExecutionVerifyAspect {
 
         if (cachedResult != null) {
             // 如果缓存中存在该值，解析缓存内容
-            String[] cachedData = cachedResult.split(":");
+            String[] cachedData = cachedResult.toString().split(":");
             String cachedInputHash = cachedData[0]; // 缓存中的输入 hash 值
             String cachedOutput = cachedData[1]; // 缓存中的输出值
 
             if (cachedInputHash.equals(inputHash)) {
                 // 输入一致，返回缓存的输出
                 System.out.println("Cache hit! Returning cached result.");
+                // 检查缓存输出值是否是 null 替代值
+                if (cachedOutput.equals("__NULL__")) {
+                    return null; // 返回 null
+                }
                 return cachedOutput;
             } else {
                 // 输入不一致，告警
@@ -69,8 +75,8 @@ public class ExecutionVerifyAspect {
         // 如果缓存中没有该值，执行原方法
         Object result = joinPoint.proceed();
 
-        // 将输入、输出以及 uuid+count 写入 Redis
-        String outputValue = result.toString();
+        // 将输入、输出以及 uuid+count 写入 Redis，注意处理 null 值
+        String outputValue = (result == null) ? "__NULL__" : result.toString();
         String redisValue = inputHash + ":" + outputValue;
         redisUtil.setValue(redisKey, redisValue, 3600); // 1小时过期时间
 
