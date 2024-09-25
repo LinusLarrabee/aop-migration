@@ -15,7 +15,7 @@ public class RedisUtil {
     private StringRedisTemplate redisTemplate;
 
     // 从 Redis 中获取值，识别 null 替代值
-    public Object getValue(String key) {
+    public String getValue(String key) {
         String value = redisTemplate.opsForValue().get(key);
         if (NULL_VALUE.equals(value)) {
             return null; // 识别到 null 替代值，返回 null

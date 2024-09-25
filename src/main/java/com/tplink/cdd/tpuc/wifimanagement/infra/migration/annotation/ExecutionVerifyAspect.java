@@ -2,6 +2,7 @@ package com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation;
 
 import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.ExecutionVerify;
 import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.RedisUtil;
+import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
@@ -15,6 +16,7 @@ import java.util.Arrays;
 
 @Aspect
 @Component
+@Slf4j // 通过 Lombok 注解自动生成 log 对象
 public class ExecutionVerifyAspect {
 
     @Autowired
@@ -33,6 +35,7 @@ public class ExecutionVerifyAspect {
         String countStr = MDC.get("count");
 
         if (uuid == null || countStr == null) {
+            log.error("MDC does not contain uuid or count. Unable to proceed.");
             throw new IllegalStateException("MDC does not contain uuid or count");
         }
 
@@ -45,40 +48,43 @@ public class ExecutionVerifyAspect {
         // 生成 Redis 键，格式为 uuid + count
         String redisKey = uuid + "_" + count;
 
+        log.info("Checking Redis for key: {}", redisKey);
+
         // 检查 Redis 中是否存在该键值
-        Object cachedResult = redisUtil.getValue(redisKey);
+        String cachedResult = redisUtil.getValue(redisKey);
 
         // 获取方法输入参数
         Object[] args = joinPoint.getArgs();
         String inputHash = Arrays.toString(args).hashCode() + ""; // 简单计算输入的 hash 值作为标识
 
         if (cachedResult != null) {
+            log.info("Cache hit for key: {}. Validating input...", redisKey);
+
             // 如果缓存中存在该值，解析缓存内容
-            String[] cachedData = cachedResult.toString().split(":");
+            String[] cachedData = cachedResult.split(":");
             String cachedInputHash = cachedData[0]; // 缓存中的输入 hash 值
             String cachedOutput = cachedData[1]; // 缓存中的输出值
 
             if (cachedInputHash.equals(inputHash)) {
                 // 输入一致，返回缓存的输出
-                System.out.println("Cache hit! Returning cached result.");
-                // 检查缓存输出值是否是 null 替代值
-                if (cachedOutput.equals("__NULL__")) {
-                    return null; // 返回 null
-                }
+                log.info("Input matches cache. Returning cached result.");
                 return cachedOutput;
             } else {
                 // 输入不一致，告警
-                System.out.println("Warning: Cache input does not match! Potential issue.");
+                log.warn("Input does not match cache! Potential data inconsistency. Cached input hash: {}, Current input hash: {}",
+                        cachedInputHash, inputHash);
             }
         }
 
         // 如果缓存中没有该值，执行原方法
+        log.info("Cache miss or data inconsistency. Proceeding with method execution...");
         Object result = joinPoint.proceed();
 
-        // 将输入、输出以及 uuid+count 写入 Redis，注意处理 null 值
-        String outputValue = (result == null) ? "__NULL__" : result.toString();
+        // 将输入、输出以及 uuid+count 写入 Redis
+        String outputValue = result.toString();
         String redisValue = inputHash + ":" + outputValue;
         redisUtil.setValue(redisKey, redisValue, 3600); // 1小时过期时间
+        log.info("Method execution completed. Stored result in Redis with key: {}", redisKey);
 
         return result;
     }

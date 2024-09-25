@@ -1,0 +1,5 @@
+# application.yml
+execute-check:
+  open: true
+  role: master # 可以是 master 或 slave
+  wait-time: 5000 # 等待时间，以毫秒为单位
