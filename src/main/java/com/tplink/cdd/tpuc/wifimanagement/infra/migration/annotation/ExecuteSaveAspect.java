@@ -1,13 +1,17 @@
+package com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation;
+
 import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.CacheService;
 import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.ExecuteMigration;
+import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.PrometheusHandler;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.logging.log4j.ThreadContext; // 或者使用org.slf4j.MDC
+import org.slf4j.MDC;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 
 @Aspect
@@ -21,17 +25,20 @@ public class ExecuteSaveAspect {
     @Autowired
     private CacheService cacheService;
 
+    @Autowired
+    private PrometheusHandler prometheusHandler; // 注入Prometheus预警处理器
+
     @Around("@annotation(ExecuteSave)")
     public Object around(ProceedingJoinPoint joinPoint) throws Throwable {
         if (!properties.isOpen()) {
-            return joinPoint.proceed(); // 如果配置未开启，直接执行原方法
+            return joinPoint.proceed(); // 如果配置未开启，继续执行业务逻辑
         }
 
-        // 从MDC中获取uuid
-        String uuid = ThreadContext.get("uuid"); // 或者使用 MDC.get("uuid");
+        // 从MDC中获取配置中定义的uuid索引
+        String uuid = MDC.get(properties.getUuid());
         if (uuid == null || uuid.isEmpty()) {
-            log.error("UUID is missing from MDC. Cannot proceed.");
-            return null; // UUID缺失，无法继续执行
+            log.error("UUID is missing from MDC with key '{}'. Proceeding with business logic.", properties.getUuid());
+            return joinPoint.proceed(); // 如果 UUID 缺失，继续执行业务逻辑
         }
 
         // 定义缓存名称
@@ -43,57 +50,62 @@ public class ExecuteSaveAspect {
         Object[] args = joinPoint.getArgs(); // 获取方法入参
 
         if ("master".equalsIgnoreCase(properties.getRole())) {
-            return handleMasterRole(joinPoint, cacheName, keyInput, args);
+            if (!handleMasterRole(cacheName, keyInput, args)) {
+                return joinPoint.proceed(); // 当不需要拦截时，继续执行业务逻辑
+            }
         } else if ("slave".equalsIgnoreCase(properties.getRole())) {
-            return handleSlaveRole(cacheName, keyInput, args);
+            return handleSlaveRole(cacheName, keyInput, args); // 直接返回null，不继续执行原方法
         }
 
-        return null; // 如果角色不匹配，不执行任何逻辑
+        return joinPoint.proceed(); // 默认情况下，继续执行业务逻辑
     }
 
-    private Object handleMasterRole(ProceedingJoinPoint joinPoint, String cacheName, String keyInput, Object[] args) throws Throwable {
-        Object redisInput = cacheService.get(cacheName, keyInput);
+    private boolean handleMasterRole(String cacheName, String keyInput, Object[] args) {
+        // 获取Redis中的输入值，指定类型为Object[]
+        String argsDigest = generateArgsDigest(args); // 生成参数摘要
+        String redisValue = cacheService.get(cacheName, keyInput, String.class);
 
-        if (redisInput != null && !redisInput.equals(args)) {
-            log.warn("Mismatch detected for input key: {}. Existing value: {}, New value: {}", keyInput, redisInput, args);
-            return null;
+        if (redisValue != null && !redisValue.equals(argsDigest)) {
+            log.warn("Mismatch detected for input key: {}. Existing value: {}, New value: {}", keyInput, redisValue, argsDigest);
+            prometheusHandler.mismatch(keyInput, redisValue, argsDigest); // 调用预警
+            return false; // 不拦截，继续执行业务逻辑
         }
 
-        // 保存输入到Redis, 设置过期时间为1小时
-        cacheService.set(cacheName, keyInput, args, 1, TimeUnit.HOURS);
+        // 保存参数摘要到Redis, 设置过期时间为1小时
+        cacheService.set(cacheName, keyInput, argsDigest, 1, TimeUnit.HOURS);
 
-        Object output = joinPoint.proceed(); // 执行原方法
-
-        // 保存输入和输出到Redis, 设置过期时间为1小时
-        cacheService.set(cacheName, keyInput + ":output", output, 1, TimeUnit.HOURS);
-
-        return output;
+        // 返回 true 表示拦截，不继续执行业务逻辑
+        return true;
     }
 
     private Object handleSlaveRole(String cacheName, String keyInput, Object[] args) {
-        Object redisInput = cacheService.get(cacheName, keyInput);
-        Object redisOutput = cacheService.get(cacheName, keyInput + ":output");
+        // 获取Redis中的输入值，指定类型为Object[]
+        String argsDigest = generateArgsDigest(args); // 生成参数摘要
+        String redisValue = cacheService.get(cacheName, keyInput, String.class);
 
-        if (redisInput != null) {
-            // 如果Redis中存在输入参数
-            if (redisInput.equals(args)) {
-                // 如果输入一致，直接返回缓存的输出
-                log.info("Input matches, returning cached output: {}", redisOutput);
-                return redisOutput;
-            } else {
-                log.warn("Mismatch detected for input key: {}. Existing value: {}, New value: {}", keyInput, redisInput, args);
-                return null;
-            }
-        } else {
-            // input 不存在，保存 input 到 Redis
-            log.info("No input found, saving input and returning null...");
-            cacheService.set(cacheName, keyInput, args, 1, TimeUnit.HOURS); // 保存输入
-            return null; // 不执行原方法
+        if (redisValue != null && !redisValue.equals(argsDigest)) {
+            // 如果Redis中存在输入参数且不一致
+            log.warn("Mismatch detected for input key: {}. Existing value: {}, New value: {}", keyInput, redisValue, argsDigest);
+            prometheusHandler.mismatch(keyInput, redisValue, argsDigest); // 调用预警
+            return null; // 返回null，不执行原方法
         }
+
+        // 保存参数摘要到缓存中, 不再执行业务逻辑
+        log.info("No input found or input matches. Saving input to cache.");
+        cacheService.set(cacheName, keyInput, argsDigest, 1, TimeUnit.HOURS); // 保存输入
+        return null; // 不执行原方法，直接返回null
     }
 
     // 生成Redis键的方法，使用uuid和类型作为区分
     private String generateKey(String uuid, String type) {
         return uuid + ":" + type;
+    }
+
+    // 生成参数摘要的方法，可以使用自定义摘要算法或简单的字符串拼接
+    private String generateArgsDigest(Object[] args) {
+        // 可以根据实际需求生成摘要，例如用某种哈希算法或简单的字符串拼接
+        return String.join(":", Arrays.stream(args)
+                .map(Object::toString)
+                .toArray(String[]::new));
     }
 }
