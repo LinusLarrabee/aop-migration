@@ -5,5 +5,6 @@ public class PrometheusMetricMigrationCheckHandler {
     }
 
     public void migrationOneside() {
+
     }
 }

@@ -29,7 +29,7 @@ public class ExecuteSaveAspect {
     @Autowired
     private PrometheusMetricMigrationSaveHandler prometheusHandler; // 注入Prometheus预警处理器
 
-    @Around("@annotation(ExecuteSave)")
+    @Around("@annotation(com.tplink.shd.tauc.migration.annotation.ExecuteSave)")
     public Object around(ProceedingJoinPoint joinPoint) throws Throwable {
         if (!properties.isKafka()) {
             return joinPoint.proceed(); // 如果配置未开启，继续执行业务逻辑
@@ -57,7 +57,7 @@ public class ExecuteSaveAspect {
             keyPart = tag; // 使用自定义的tag
         } else {
             // 当tag为空时，获取类名和方法名作为key的一部分
-            String className = joinPoint.getSignature().getDeclaringType().getSimpleName();
+            String className = joinPoint.getSignature().getDeclaringType().getSimpleName(); // 只获取类的简单名称
             String methodName = joinPoint.getSignature().getName();
             keyPart = className + ":" + methodName;
         }
@@ -66,56 +66,76 @@ public class ExecuteSaveAspect {
         String masterInputKey = generateKey(uuid, "master", keyPart);
         String slaveInputKey = generateKey(uuid, "slave", keyPart);
 
+        // 使用配置中的缓存名称
+        String cacheName = properties.getCacheName();
+
         // 根据角色区分逻辑
         if ("master".equalsIgnoreCase(properties.getKafkaRole())) {
-            return handleMasterRole(joinPoint, masterInputKey, slaveInputKey, argsDigest);
+            return handleMasterRole(joinPoint, cacheName, masterInputKey, slaveInputKey, argsDigest);
         } else if ("slave".equalsIgnoreCase(properties.getKafkaRole())) {
-            return handleSlaveRole(masterInputKey, slaveInputKey, argsDigest);
+            return handleSlaveRole(cacheName, masterInputKey, slaveInputKey, argsDigest);
         }
 
         return joinPoint.proceed(); // 默认情况下，继续执行业务逻辑
     }
 
-    private boolean handleMasterRole(String cacheName, String keyInput, Object[] args) {
-        // 获取Redis中的输入值，指定类型为Object[]
-        String argsDigest = generateArgsDigest(args); // 生成参数摘要
-        String redisValue = cacheService.get(cacheName, keyInput, String.class);
-
-        if (redisValue != null && !redisValue.equals(argsDigest)) {
-            log.warn("Mismatch detected for input key: {}. Existing value: {}, New value: {}", keyInput, redisValue, argsDigest);
+    private Object handleMasterRole(ProceedingJoinPoint joinPoint, String cacheName, String masterInputKey, String slaveInputKey, String argsDigest) throws Throwable {
+        // 检查 Redis 中是否有相同的 slave 输入参数
+        String redisSlaveInput = cacheService.get(cacheName, slaveInputKey, String.class);
+        if (redisSlaveInput != null && !redisSlaveInput.equals(argsDigest)) {
+            // 如果 slave 输入不一致，调用预警，然后继续执行业务逻辑
+            log.warn("Mismatch detected for slave input key: {}. Existing value: {}, New value: {}", slaveInputKey, redisSlaveInput, argsDigest);
             prometheusHandler.migrationMismatch(); // 调用预警
-            return false; // 不拦截，继续执行业务逻辑
+            return joinPoint.proceed(); // 继续执行业务逻辑
         }
 
-        log.debug("Check for input key: {}. Existing value: {}, New value: {}", keyInput, redisValue, argsDigest);
-        // 保存参数摘要到Redis, 设置过期时间为1小时
-        cacheService.set(cacheName, keyInput, argsDigest, properties.getExpireTime(), TimeUnit.SECONDS);
-
-        // 返回 true 表示拦截，不继续执行业务逻辑
-        return true;
-    }
-
-    private Object handleSlaveRole(String cacheName, String keyInput, Object[] args) {
-        // 获取Redis中的输入值，指定类型为Object[]
-        String argsDigest = generateArgsDigest(args); // 生成参数摘要
-        String redisValue = cacheService.get(cacheName, keyInput, String.class);
-
-        if (redisValue != null && !redisValue.equals(argsDigest)) {
-            // 如果Redis中存在输入参数且不一致
-            log.warn("Mismatch detected for input key: {}. Existing value: {}, New value: {}", keyInput, redisValue, argsDigest);
-            prometheusHandler.migrationMismatch(); // 调用预警
-            return null; // 返回null，不执行原方法
+        // 如果 slave 参数相同，继续执行业务逻辑
+        if (redisSlaveInput != null && redisSlaveInput.equals(argsDigest)) {
+            return joinPoint.proceed(); // 继续执行业务逻辑
         }
 
-        // 保存参数摘要到缓存中, 不再执行业务逻辑
-        log.info("No input found or input matches. Saving input to cache.");
-        cacheService.set(cacheName, keyInput, argsDigest, properties.getExpireTime(), TimeUnit.SECONDS);
-        return null; // 不执行原方法，直接返回null
+        // 检查 Redis 中是否有相同的 master 输入参数
+        String redisMasterInput = cacheService.get(cacheName, masterInputKey, String.class);
+        if (redisMasterInput != null && !redisMasterInput.equals(argsDigest)) {
+            // 如果 master 输入不一致，调用预警，然后返回 null，不继续执行业务逻辑
+            log.warn("Mismatch detected for master input key: {}. Existing value: {}, New value: {}", masterInputKey, redisMasterInput, argsDigest);
+            prometheusHandler.migrationMismatch(); // 调用预警
+            return null; // 返回null，不继续执行业务逻辑
+        }
+
+        // 如果 master 参数相同，返回 null，不继续执行业务逻辑
+        if (redisMasterInput != null && redisMasterInput.equals(argsDigest)) {
+            return null; // 返回null，不继续执行业务逻辑
+        }
+
+        // master 参数在 Redis 中不存在，保存并执行原方法
+        cacheService.set(cacheName, masterInputKey, argsDigest, properties.getExpireTime(), TimeUnit.SECONDS); // 保存 master 输入到 Redis
+        return joinPoint.proceed(); // 执行原方法
     }
 
-    // 生成Redis键的方法，使用uuid和类型作为区分
-    private String generateKey(String uuid, String type) {
-        return uuid + ":" + type;
+    private Object handleSlaveRole(String cacheName, String masterInputKey, String slaveInputKey, String argsDigest) {
+        // 检查 Redis 中是否有相同的 master 输入参数
+        String redisMasterInput = cacheService.get(cacheName, masterInputKey, String.class);
+        if (redisMasterInput != null && !redisMasterInput.equals(argsDigest)) {
+            // 如果 master 输入不一致，调用预警，然后返回 null，不继续执行业务逻辑
+            log.warn("Mismatch detected for master input key: {}. Existing value: {}, New value: {}", masterInputKey, redisMasterInput, argsDigest);
+            prometheusHandler.migrationMismatch(); // 调用预警
+            return null; // 返回null，不继续执行业务逻辑
+        }
+
+        // 如果 master 参数相同，返回 null，不继续执行业务逻辑
+        if (redisMasterInput != null && redisMasterInput.equals(argsDigest)) {
+            return null; // 返回null，不继续执行业务逻辑
+        }
+
+        // master 参数在 Redis 中不存在，保存 slave 输入到 Redis
+        cacheService.set(cacheName, slaveInputKey, argsDigest, properties.getExpireTime(), TimeUnit.SECONDS); // 保存 slave 输入到 Redis
+        return null; // 不继续执行业务逻辑
+    }
+
+    // 生成Redis键的方法，使用uuid、类型、类名和方法名或tag作为区分
+    private String generateKey(String uuid, String type, String keyPart) {
+        return uuid + ":" + type + ":" + keyPart;
     }
 
     // 生成参数摘要的方法，可以使用自定义摘要算法或简单的字符串拼接
