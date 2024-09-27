@@ -1,16 +1,17 @@
-
 package com.tplink.shd.tauc.migration.annotation;
 
 import com.tplink.shd.tauc.share.prometheus.PrometheusMetricMigrationSaveHandler;
 import com.tplink.smb.component.cache.api.CacheService;
 import lombok.extern.slf4j.Slf4j;
-import org.slf4j.MDC;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.reflect.MethodSignature;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import org.slf4j.MDC;
 
+import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 
@@ -28,7 +29,7 @@ public class ExecuteSaveAspect {
     @Autowired
     private PrometheusMetricMigrationSaveHandler prometheusHandler; // 注入Prometheus预警处理器
 
-    @Around("@annotation(com.tplink.shd.tauc.migration.annotation.ExecuteSave)")
+    @Around("@annotation(ExecuteSave)")
     public Object around(ProceedingJoinPoint joinPoint) throws Throwable {
         if (!properties.isKafka()) {
             return joinPoint.proceed(); // 如果配置未开启，继续执行业务逻辑
@@ -41,20 +42,35 @@ public class ExecuteSaveAspect {
             return joinPoint.proceed(); // 如果 UUID 缺失，继续执行业务逻辑
         }
 
-        // 定义缓存名称
-        String cacheName = "ExecuteSaveCache";
-
-        // 生成Redis的键，使用uuid作为键的一部分
-        String keyInput = generateKey(uuid, "input");
-
         Object[] args = joinPoint.getArgs(); // 获取方法入参
+        String argsDigest = generateArgsDigest(args); // 生成参数摘要
 
+        // 获取@ExecuteSave注解的tag字段
+        MethodSignature methodSignature = (MethodSignature) joinPoint.getSignature();
+        Method method = methodSignature.getMethod();
+        ExecuteSave executeSaveAnnotation = method.getAnnotation(ExecuteSave.class);
+        String tag = executeSaveAnnotation.tag();
+
+        // 判断tag是否有值
+        String keyPart;
+        if (tag != null && !tag.isEmpty()) {
+            keyPart = tag; // 使用自定义的tag
+        } else {
+            // 当tag为空时，获取类名和方法名作为key的一部分
+            String className = joinPoint.getSignature().getDeclaringType().getSimpleName();
+            String methodName = joinPoint.getSignature().getName();
+            keyPart = className + ":" + methodName;
+        }
+
+        // 生成Redis键，分别使用master和slave的标识，并带上类名和方法名或tag
+        String masterInputKey = generateKey(uuid, "master", keyPart);
+        String slaveInputKey = generateKey(uuid, "slave", keyPart);
+
+        // 根据角色区分逻辑
         if ("master".equalsIgnoreCase(properties.getKafkaRole())) {
-            if (!handleMasterRole(cacheName, keyInput, args)) {
-                return joinPoint.proceed(); // 当不需要拦截时，继续执行业务逻辑
-            }
+            return handleMasterRole(joinPoint, masterInputKey, slaveInputKey, argsDigest);
         } else if ("slave".equalsIgnoreCase(properties.getKafkaRole())) {
-            return handleSlaveRole(cacheName, keyInput, args); // 直接返回null，不继续执行原方法
+            return handleSlaveRole(masterInputKey, slaveInputKey, argsDigest);
         }
 
         return joinPoint.proceed(); // 默认情况下，继续执行业务逻辑
