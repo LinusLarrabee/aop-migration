@@ -1,6 +1,6 @@
 package com.tplink.cdd.tpuc.wifimanagement.infra.migration.cases;
 
-import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.ExecutionVerify;
+import com.tplink.shd.tauc.migration.annotation.ExecutionVerify;
 import org.springframework.stereotype.Service;
 
 @Service

@@ -1,4 +1,7 @@
-package com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation;
+package com.tplink.shd.tauc.migration.annotation;
+
+import com.tplink.shd.tauc.share.prometheus.PrometheusMetricMigrationCheckHandler;
+import com.tplink.smb.component.cache.api.CacheService;
 
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -23,34 +26,32 @@ public class ExecuteCheckAspect {
     private CacheService cacheService;
 
     @Autowired
-    private PrometheusHandler prometheusHandler; // 注入Prometheus预警处理器
+    private PrometheusMetricMigrationCheckHandler prometheusHandler; // 注入Prometheus预警处理器
 
-    @Around("@annotation(ExecuteCheck)")
+    @Around("@annotation(com.tplink.shd.tauc.migration.annotation.ExecuteCheck)")
     public Object around(ProceedingJoinPoint joinPoint) throws Throwable {
-        if (!properties.isOpen()) {
+        if (!properties.isKafka()) {
             return joinPoint.proceed(); // 如果配置未开启，继续执行业务逻辑
         }
 
         // 从MDC中获取配置中定义的uuid索引
         String uuid = MDC.get(properties.getUuid());
         if (uuid == null || uuid.isEmpty()) {
-            log.error("UUID is missing from MDC with key '{}'. Proceeding with business logic.", properties.getUuid());
+            log.info("UUID is missing from MDC with key '{}'. Proceeding with business logic.", properties.getUuid());
             return joinPoint.proceed(); // 如果 UUID 缺失，继续执行业务逻辑
         }
-
-        // 定义缓存名称
-        String cacheName = "ExecuteCheckCache";
 
         // 生成Redis的键，使用uuid作为键的一部分
         String keyInput = generateKey(uuid, "input");
         String keyInOut = generateKey(uuid, "inout");
 
         Object[] args = joinPoint.getArgs(); // 获取方法入参
+        log.debug("ExecuteCheck {}",uuid);
 
-        if ("master".equalsIgnoreCase(properties.getRole())) {
-            return handleMasterRole(joinPoint, cacheName, keyInput, keyInOut, args);
-        } else if ("slave".equalsIgnoreCase(properties.getRole())) {
-            return handleSlaveRole(cacheName, keyInput, keyInOut, args);
+        if ("master".equalsIgnoreCase(properties.getKafkaRole())) {
+            return handleMasterRole(joinPoint, properties.getCacheName(), keyInput, keyInOut, args);
+        } else if ("slave".equalsIgnoreCase(properties.getKafkaRole())) {
+            return handleSlaveRole(properties.getCacheName(), keyInput, keyInOut, args);
         }
 
         return joinPoint.proceed(); // 默认情况下，继续执行业务逻辑
@@ -63,16 +64,16 @@ public class ExecuteCheckAspect {
 
         if (redisInput != null && !redisInput.equals(argsDigest)) {
             log.warn("Mismatch detected for input key: {}. Existing value: {}, New value: {}", keyInput, redisInput, argsDigest);
-            prometheusHandler.mismatch(keyInput, redisInput, argsDigest); // 调用预警
+            prometheusHandler.migrationMismatch(); // 调用预警
         } else {
             // 保存输入到Redis, 设置过期时间为1小时
-            cacheService.set(cacheName, keyInput, argsDigest, 1, TimeUnit.HOURS);
+            cacheService.set(cacheName, keyInput, argsDigest, properties.getExpireTime(), TimeUnit.SECONDS);
         }
-
+        log.debug("Check for input key: {}. Existing value: {}, New value: {}", keyInput, redisInput, argsDigest);
         Object output = joinPoint.proceed(); // 执行原方法
 
         // 保存输入和输出到Redis, 设置过期时间为1小时
-        cacheService.set(cacheName, keyInOut, new InOut(argsDigest, output), 1, TimeUnit.HOURS);
+        cacheService.set(cacheName, keyInOut, new InOut(argsDigest, output), properties.getExpireTime(), TimeUnit.SECONDS);
 
         return output;
     }
@@ -90,14 +91,14 @@ public class ExecuteCheckAspect {
                 return redisInOut.getOutput(); // 直接返回缓存的输出
             } else {
                 log.warn("Mismatch detected for input key: {}. Existing value: {}, New value: {}", keyInput, redisInput, argsDigest);
-                prometheusHandler.mismatch(keyInput, redisInput, argsDigest); // 调用预警
+                prometheusHandler.migrationMismatch(); // 调用预警
                 return null; // 返回 null，不继续执行业务逻辑
             }
         } else if (redisInput != null) {
             // 仅存在 input，没有 in/out
             if (!redisInput.equals(argsDigest)) {
                 log.warn("Mismatch detected for input key: {}. Existing value: {}, New value: {}", keyInput, redisInput, argsDigest);
-                prometheusHandler.mismatch(keyInput, redisInput, argsDigest); // 调用预警
+                prometheusHandler.migrationMismatch(); // 调用预警
             }
             log.info("Only input found for key: {}. Waiting for output...", keyInput);
             Thread.sleep(properties.getWaitTime()); // 等待固定时间
@@ -114,7 +115,7 @@ public class ExecuteCheckAspect {
             Thread.sleep(properties.getWaitTime()); // 等待固定时间
             redisInOut = cacheService.get(cacheName, keyInOut, InOut.class);
             if (redisInOut == null) {
-                log.error("One side alert: No input and output found after waiting for key: {}", keyInput);
+                prometheusHandler.migrationOneside(); // 调用预警
             }
             return null;
         }
@@ -160,3 +161,8 @@ public class ExecuteCheckAspect {
         }
     }
 }
+
+
+
+
+

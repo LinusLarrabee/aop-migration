@@ -1,4 +1,4 @@
-package com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation;
+package com.tplink.shd.tauc.migration.annotation;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;

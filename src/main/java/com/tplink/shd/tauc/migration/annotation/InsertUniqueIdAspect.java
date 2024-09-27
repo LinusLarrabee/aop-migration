@@ -1,9 +1,8 @@
-package com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation;
 
-import com.tplink.cdd.tpuc.wifimanagement.infra.migration.props.AopMigrationProps;
+package com.tplink.shd.tauc.migration.annotation;
+
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
-import org.aspectj.lang.Signature;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.slf4j.MDC;
@@ -29,17 +28,20 @@ import java.util.Arrays;
 @Component
 public class InsertUniqueIdAspect {
     @Autowired
-    AopMigrationProps aopMigrationProps;
+    ExecuteMigration aopMigrationProps;
 
     @Around("@annotation(InsertUniqueId)")
     public Object insertUniqueId(ProceedingJoinPoint joinPoint) throws Throwable {
+        log.info("InsertUniqueId");
         try {
             Object[] args = joinPoint.getArgs();
 
             // 使用指定的入参部分生成唯一id，例如使用第一个和第二个参数的组合
             String param1 = args.length > 0 ? args[0].toString() : "";
             String param2 = args.length > 1 ? args[1].toString() : "";
-            String uniqueId = generateUniqueId(param1 + param2).substring(0, 32);
+//            String uniqueId = generateUniqueId(param1 + param2).substring(0, 32);
+            String uniqueId = param1+"-"+param2;
+            log.info(uniqueId);
 
             // 将唯一id直接写入到MDC
             MDC.put(aopMigrationProps.getUuid(), uniqueId);
@@ -62,7 +64,7 @@ public class InsertUniqueIdAspect {
      */
     private int generateUUID(Object obj) throws IOException {
         try(ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        ObjectOutputStream oos = new ObjectOutputStream(baos)){
+            ObjectOutputStream oos = new ObjectOutputStream(baos)){
             oos.writeObject(obj);
             oos.flush();
             byte[] bytes = baos.toByteArray();

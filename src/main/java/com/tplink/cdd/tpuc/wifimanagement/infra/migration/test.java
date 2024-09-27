@@ -1,7 +1,7 @@
 package com.tplink.cdd.tpuc.wifimanagement.infra.migration;
 
 import com.tplink.cdd.tpuc.wifimanagement.dao.ApWifiQualityDAO;
-import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.InsertUniqueId;
+import com.tplink.shd.tauc.migration.annotation.InsertUniqueId;
 import com.tplink.cdd.tpuc.wifimanagement.infra.migration.props.AopMigrationProps;
 import com.tplink.cdd.tpuc.wifimanagement.infra.migration.reflection.User;
 import com.tplink.cdd.tpuc.wifimanagement.infra.migration.reflection.UserDTO;

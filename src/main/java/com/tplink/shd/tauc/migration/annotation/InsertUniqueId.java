@@ -1,4 +1,4 @@
-package com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation;
+package com.tplink.shd.tauc.migration.annotation;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;

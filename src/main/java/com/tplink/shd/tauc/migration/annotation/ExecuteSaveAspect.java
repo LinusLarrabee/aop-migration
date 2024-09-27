@@ -1,8 +1,8 @@
-package com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation;
 
-import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.CacheService;
-import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.ExecuteMigration;
-import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.PrometheusHandler;
+package com.tplink.shd.tauc.migration.annotation;
+
+import com.tplink.shd.tauc.share.prometheus.PrometheusMetricMigrationSaveHandler;
+import com.tplink.smb.component.cache.api.CacheService;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -26,11 +26,11 @@ public class ExecuteSaveAspect {
     private CacheService cacheService;
 
     @Autowired
-    private PrometheusHandler prometheusHandler; // 注入Prometheus预警处理器
+    private PrometheusMetricMigrationSaveHandler prometheusHandler; // 注入Prometheus预警处理器
 
-    @Around("@annotation(ExecuteSave)")
+    @Around("@annotation(com.tplink.shd.tauc.migration.annotation.ExecuteSave)")
     public Object around(ProceedingJoinPoint joinPoint) throws Throwable {
-        if (!properties.isOpen()) {
+        if (!properties.isKafka()) {
             return joinPoint.proceed(); // 如果配置未开启，继续执行业务逻辑
         }
 
@@ -49,11 +49,11 @@ public class ExecuteSaveAspect {
 
         Object[] args = joinPoint.getArgs(); // 获取方法入参
 
-        if ("master".equalsIgnoreCase(properties.getRole())) {
+        if ("master".equalsIgnoreCase(properties.getKafkaRole())) {
             if (!handleMasterRole(cacheName, keyInput, args)) {
                 return joinPoint.proceed(); // 当不需要拦截时，继续执行业务逻辑
             }
-        } else if ("slave".equalsIgnoreCase(properties.getRole())) {
+        } else if ("slave".equalsIgnoreCase(properties.getKafkaRole())) {
             return handleSlaveRole(cacheName, keyInput, args); // 直接返回null，不继续执行原方法
         }
 
@@ -67,12 +67,13 @@ public class ExecuteSaveAspect {
 
         if (redisValue != null && !redisValue.equals(argsDigest)) {
             log.warn("Mismatch detected for input key: {}. Existing value: {}, New value: {}", keyInput, redisValue, argsDigest);
-            prometheusHandler.mismatch(keyInput, redisValue, argsDigest); // 调用预警
+            prometheusHandler.migrationMismatch(); // 调用预警
             return false; // 不拦截，继续执行业务逻辑
         }
 
+        log.debug("Check for input key: {}. Existing value: {}, New value: {}", keyInput, redisValue, argsDigest);
         // 保存参数摘要到Redis, 设置过期时间为1小时
-        cacheService.set(cacheName, keyInput, argsDigest, 1, TimeUnit.HOURS);
+        cacheService.set(cacheName, keyInput, argsDigest, properties.getExpireTime(), TimeUnit.SECONDS);
 
         // 返回 true 表示拦截，不继续执行业务逻辑
         return true;
@@ -86,13 +87,13 @@ public class ExecuteSaveAspect {
         if (redisValue != null && !redisValue.equals(argsDigest)) {
             // 如果Redis中存在输入参数且不一致
             log.warn("Mismatch detected for input key: {}. Existing value: {}, New value: {}", keyInput, redisValue, argsDigest);
-            prometheusHandler.mismatch(keyInput, redisValue, argsDigest); // 调用预警
+            prometheusHandler.migrationMismatch(); // 调用预警
             return null; // 返回null，不执行原方法
         }
 
         // 保存参数摘要到缓存中, 不再执行业务逻辑
         log.info("No input found or input matches. Saving input to cache.");
-        cacheService.set(cacheName, keyInput, argsDigest, 1, TimeUnit.HOURS); // 保存输入
+        cacheService.set(cacheName, keyInput, argsDigest, properties.getExpireTime(), TimeUnit.SECONDS);
         return null; // 不执行原方法，直接返回null
     }
 

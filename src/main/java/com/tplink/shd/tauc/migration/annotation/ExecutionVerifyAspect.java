@@ -1,7 +1,5 @@
-package com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation;
+package com.tplink.shd.tauc.migration.annotation;
 
-import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.ExecutionVerify;
-import com.tplink.cdd.tpuc.wifimanagement.infra.migration.annotation.RedisUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
