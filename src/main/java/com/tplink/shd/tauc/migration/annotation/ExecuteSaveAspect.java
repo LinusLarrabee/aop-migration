@@ -71,6 +71,7 @@ public class ExecuteSaveAspect {
         String masterInputKey = generateKey(uuid, "master", keyPart, simpleArgsDigest);
         String slaveInputKey = generateKey(uuid, "slave", keyPart, simpleArgsDigest);
 
+        log.debug("masterInputKey{}",masterInputKey);
         // 使用配置中的缓存名称
         String cacheName = properties.getCacheName();
 
