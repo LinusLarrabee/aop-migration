@@ -13,6 +13,7 @@ import org.slf4j.MDC;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 @Aspect
@@ -29,10 +30,11 @@ public class ExecuteSaveAspect {
     @Autowired
     private PrometheusMetricMigrationSaveHandler prometheusHandler; // 注入Prometheus预警处理器
 
-    @Around("@annotation(com.tplink.shd.tauc.migration.annotation.ExecuteSave)")
+    @Around("@annotation(ExecuteSave)")
     public Object around(ProceedingJoinPoint joinPoint) throws Throwable {
-        if (!properties.isKafka()) {
-            return joinPoint.proceed(); // 如果配置未开启，继续执行业务逻辑
+        // 如果isSaveSwitch未开启，继续执行业务逻辑
+        if (!properties.isSaveSwitch()) {
+            return joinPoint.proceed();
         }
 
         // 从MDC中获取配置中定义的uuid索引
@@ -46,6 +48,10 @@ public class ExecuteSaveAspect {
         String argsDigest = generateArgsDigest(args); // 生成详细参数摘要
         String simpleArgsDigest = generateSimpleArgsDigest(args); // 生成简单参数摘要
 
+        // 获取当前方法和上一层调用者的方法信息
+        String currentMethodInfo = getCurrentMethodInfo(joinPoint);
+        String callerMethodInfo = getCallerMethodInfo().orElse("UnknownCaller");
+
         // 获取@ExecuteSave注解的tag字段
         MethodSignature methodSignature = (MethodSignature) joinPoint.getSignature();
         Method method = methodSignature.getMethod();
@@ -57,10 +63,8 @@ public class ExecuteSaveAspect {
         if (tag != null && !tag.isEmpty()) {
             keyPart = tag; // 使用自定义的tag
         } else {
-            // 当tag为空时，获取类名和方法名作为key的一部分
-            String className = joinPoint.getSignature().getDeclaringType().getSimpleName(); // 只获取类的简单名称
-            String methodName = joinPoint.getSignature().getName();
-            keyPart = className + ":" + methodName;
+            // 当tag为空时，使用当前方法信息和调用者方法信息作为key的一部分
+            keyPart = currentMethodInfo + ":" + callerMethodInfo;
         }
 
         // 生成Redis键，加入简单参数摘要
@@ -131,6 +135,21 @@ public class ExecuteSaveAspect {
 
         // master 参数在 Redis 中不存在，保存 slave 输入到 Redis
         cacheService.set(cacheName, slaveInputKey, argsDigest, properties.getExpireTime(), TimeUnit.SECONDS); // 保存 slave 输入到 Redis
+
+        // master 参数在 Redis 中不存在，等待指定时间后再次检查
+        try {
+            Thread.sleep(properties.getWaitTime()); // 等待配置的等待时间
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); // 恢复中断状态
+            log.error("Interrupted while waiting for master input key: {}", masterInputKey);
+        }
+        // 再次检查 Redis 中是否有相同的 master 输入参数
+        redisMasterInput = cacheService.get(cacheName, masterInputKey, String.class);
+        if (redisMasterInput == null) {
+            // 等待后依然找不到 master 输入，触发 oneside 异常预警
+            log.warn("One-side exception: master input key not found after waiting: {}", masterInputKey);
+            prometheusHandler.migrationMismatch(); // 调用oneside异常预警
+        }
         return null; // 不继续执行业务逻辑
     }
 
@@ -154,5 +173,27 @@ public class ExecuteSaveAspect {
                 .map(Object::toString)
                 .toArray(String[]::new));
         return HashUtils.generateSimpleHash(input);
+    }
+
+    // 获取当前方法的信息（类名和方法名）
+    private String getCurrentMethodInfo(ProceedingJoinPoint joinPoint) {
+        String className = joinPoint.getSignature().getDeclaringType().getSimpleName();
+        String methodName = joinPoint.getSignature().getName();
+        return className + ":" + methodName;
+    }
+
+    // 获取上一层调用者的方法信息（类名和方法名）
+    private Optional<String> getCallerMethodInfo() {
+        StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+        // 查找调用链中的上一层方法（去掉前几层与切面相关的方法调用）
+        for (int i = 1; i < stackTrace.length; i++) {
+            StackTraceElement element = stackTrace[i];
+            if (!element.getClassName().equals(this.getClass().getName()) &&
+                    !element.getClassName().contains("CGLIB") &&
+                    !element.getMethodName().equals("around")) {
+                return Optional.of(element.getClassName() + ":" + element.getMethodName());
+            }
+        }
+        return Optional.empty();
     }
 }
