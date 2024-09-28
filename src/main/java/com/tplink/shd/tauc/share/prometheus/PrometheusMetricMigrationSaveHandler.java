@@ -4,6 +4,9 @@ public class PrometheusMetricMigrationSaveHandler {
     public void migrationMismatch() {
     }
 
-    public void migrationOneside() {
+
+    public void match() {
+        // 处理匹配的逻辑
+        System.out.println("Prometheus: Match detected.");
     }
 }

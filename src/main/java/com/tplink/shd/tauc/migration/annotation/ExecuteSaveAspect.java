@@ -43,7 +43,8 @@ public class ExecuteSaveAspect {
         }
 
         Object[] args = joinPoint.getArgs(); // 获取方法入参
-        String argsDigest = generateArgsDigest(args); // 生成参数摘要
+        String argsDigest = generateArgsDigest(args); // 生成详细参数摘要
+        String simpleArgsDigest = generateSimpleArgsDigest(args); // 生成简单参数摘要
 
         // 获取@ExecuteSave注解的tag字段
         MethodSignature methodSignature = (MethodSignature) joinPoint.getSignature();
@@ -62,9 +63,9 @@ public class ExecuteSaveAspect {
             keyPart = className + ":" + methodName;
         }
 
-        // 生成Redis键，分别使用master和slave的标识，并带上类名和方法名或tag
-        String masterInputKey = generateKey(uuid, "master", keyPart);
-        String slaveInputKey = generateKey(uuid, "slave", keyPart);
+        // 生成Redis键，加入简单参数摘要
+        String masterInputKey = generateKey(uuid, "master", keyPart, simpleArgsDigest);
+        String slaveInputKey = generateKey(uuid, "slave", keyPart, simpleArgsDigest);
 
         // 使用配置中的缓存名称
         String cacheName = properties.getCacheName();
@@ -82,29 +83,29 @@ public class ExecuteSaveAspect {
     private Object handleMasterRole(ProceedingJoinPoint joinPoint, String cacheName, String masterInputKey, String slaveInputKey, String argsDigest) throws Throwable {
         // 检查 Redis 中是否有相同的 slave 输入参数
         String redisSlaveInput = cacheService.get(cacheName, slaveInputKey, String.class);
-        if (redisSlaveInput != null && !redisSlaveInput.equals(argsDigest)) {
-            // 如果 slave 输入不一致，调用预警，然后继续执行业务逻辑
-            log.warn("Mismatch detected for slave input key: {}. Existing value: {}, New value: {}", slaveInputKey, redisSlaveInput, argsDigest);
-            prometheusHandler.migrationMismatch(); // 调用预警
-            return joinPoint.proceed(); // 继续执行业务逻辑
-        }
-
-        // 如果 slave 参数相同，继续执行业务逻辑
         if (redisSlaveInput != null && redisSlaveInput.equals(argsDigest)) {
+            // 如果 slave 输入一致，调用匹配成功预警
+            log.info("Match detected for slave input key: {}", slaveInputKey);
+            prometheusHandler.match(); // 调用匹配预警
+            return joinPoint.proceed(); // 继续执行业务逻辑
+        } else if (redisSlaveInput != null) {
+            // 如果 slave 输入不一致，调用不匹配预警
+            log.warn("Mismatch detected for slave input key: {}. Existing value: {}, New value: {}", slaveInputKey, redisSlaveInput, argsDigest);
+            prometheusHandler.migrationMismatch(); // 调用不匹配预警
             return joinPoint.proceed(); // 继续执行业务逻辑
         }
 
         // 检查 Redis 中是否有相同的 master 输入参数
         String redisMasterInput = cacheService.get(cacheName, masterInputKey, String.class);
-        if (redisMasterInput != null && !redisMasterInput.equals(argsDigest)) {
-            // 如果 master 输入不一致，调用预警，然后返回 null，不继续执行业务逻辑
-            log.warn("Mismatch detected for master input key: {}. Existing value: {}, New value: {}", masterInputKey, redisMasterInput, argsDigest);
-            prometheusHandler.migrationMismatch(); // 调用预警
-            return null; // 返回null，不继续执行业务逻辑
-        }
-
-        // 如果 master 参数相同，返回 null，不继续执行业务逻辑
         if (redisMasterInput != null && redisMasterInput.equals(argsDigest)) {
+            // 如果 master 输入一致，调用匹配成功预警
+            log.info("Match detected for master input key: {}", masterInputKey);
+            prometheusHandler.match(); // 调用匹配预警
+            return null; // 返回 null，不继续执行业务逻辑
+        } else if (redisMasterInput != null) {
+            // 如果 master 输入不一致，调用不匹配预警
+            log.warn("Mismatch detected for master input key: {}. Existing value: {}, New value: {}", masterInputKey, redisMasterInput, argsDigest);
+            prometheusHandler.migrationMismatch(); // 调用不匹配预警
             return null; // 返回null，不继续执行业务逻辑
         }
 
@@ -116,15 +117,15 @@ public class ExecuteSaveAspect {
     private Object handleSlaveRole(String cacheName, String masterInputKey, String slaveInputKey, String argsDigest) {
         // 检查 Redis 中是否有相同的 master 输入参数
         String redisMasterInput = cacheService.get(cacheName, masterInputKey, String.class);
-        if (redisMasterInput != null && !redisMasterInput.equals(argsDigest)) {
-            // 如果 master 输入不一致，调用预警，然后返回 null，不继续执行业务逻辑
-            log.warn("Mismatch detected for master input key: {}. Existing value: {}, New value: {}", masterInputKey, redisMasterInput, argsDigest);
-            prometheusHandler.migrationMismatch(); // 调用预警
-            return null; // 返回null，不继续执行业务逻辑
-        }
-
-        // 如果 master 参数相同，返回 null，不继续执行业务逻辑
         if (redisMasterInput != null && redisMasterInput.equals(argsDigest)) {
+            // 如果 master 输入一致，调用匹配成功预警
+            log.info("Match detected for master input key: {}", masterInputKey);
+            prometheusHandler.match(); // 调用匹配预警
+            return null; // 返回 null，不继续执行业务逻辑
+        } else if (redisMasterInput != null) {
+            // 如果 master 输入不一致，调用不匹配预警
+            log.warn("Mismatch detected for master input key: {}. Existing value: {}, New value: {}", masterInputKey, redisMasterInput, argsDigest);
+            prometheusHandler.migrationMismatch(); // 调用不匹配预警
             return null; // 返回null，不继续执行业务逻辑
         }
 
@@ -133,16 +134,25 @@ public class ExecuteSaveAspect {
         return null; // 不继续执行业务逻辑
     }
 
-    // 生成Redis键的方法，使用uuid、类型、类名和方法名或tag作为区分
-    private String generateKey(String uuid, String type, String keyPart) {
-        return uuid + ":" + type + ":" + keyPart;
+    // 生成Redis键的方法，使用uuid、类型、类名和方法名或tag、简单摘要作为区分
+    private String generateKey(String uuid, String type, String keyPart, String simpleArgsDigest) {
+        return uuid + ":" + type + ":" + keyPart + ":" + simpleArgsDigest;
     }
 
-    // 生成参数摘要的方法，可以使用自定义摘要算法或简单的字符串拼接
+    // 生成详细参数摘要的方法，可以使用自定义摘要算法或简单的字符串拼接
     private String generateArgsDigest(Object[] args) {
-        // 可以根据实际需求生成摘要，例如用某种哈希算法或简单的字符串拼接
+        // 可以根据实际需求生成详细摘要，例如用某种哈希算法或简单的字符串拼接
         return String.join(":", Arrays.stream(args)
                 .map(Object::toString)
                 .toArray(String[]::new));
+    }
+
+    // 生成简单参数摘要的方法，可以使用自定义的快速摘要算法
+    private String generateSimpleArgsDigest(Object[] args) {
+        // 将所有参数拼接成一个字符串并生成MD5摘要
+        String input = String.join(",", Arrays.stream(args)
+                .map(Object::toString)
+                .toArray(String[]::new));
+        return HashUtils.generateSimpleHash(input);
     }
 }
