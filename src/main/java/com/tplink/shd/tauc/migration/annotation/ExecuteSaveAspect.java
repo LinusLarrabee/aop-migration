@@ -85,7 +85,7 @@ public class ExecuteSaveAspect {
         return joinPoint.proceed(); // 默认情况下，继续执行业务逻辑
     }
 
-    private Object handleMasterRole(ProceedingJoinPoint joinPoint, String cacheName, String masterInputKey, String slaveInputKey, String argsDigest) throws Throwable {
+    public Object handleMasterRole(ProceedingJoinPoint joinPoint, String cacheName, String masterInputKey, String slaveInputKey, String argsDigest) throws Throwable {
         // 检查 Redis 中是否有相同的 slave 输入参数
         String redisSlaveInput = cacheService.get(cacheName, slaveInputKey, String.class);
         if (redisSlaveInput != null && redisSlaveInput.equals(argsDigest)) {
@@ -119,7 +119,7 @@ public class ExecuteSaveAspect {
         return joinPoint.proceed(); // 执行原方法
     }
 
-    private Object handleSlaveRole(String cacheName, String masterInputKey, String slaveInputKey, String argsDigest) {
+    public Object handleSlaveRole(String cacheName, String masterInputKey, String slaveInputKey, String argsDigest) {
         // 检查 Redis 中是否有相同的 master 输入参数
         String redisMasterInput = cacheService.get(cacheName, masterInputKey, String.class);
         if (redisMasterInput != null && redisMasterInput.equals(argsDigest)) {
@@ -155,12 +155,12 @@ public class ExecuteSaveAspect {
     }
 
     // 生成Redis键的方法，使用uuid、类型、类名和方法名或tag、简单摘要作为区分
-    private String generateKey(String uuid, String type, String keyPart, String simpleArgsDigest) {
+    public String generateKey(String uuid, String type, String keyPart, String simpleArgsDigest) {
         return uuid + ":" + type + ":" + keyPart + ":" + simpleArgsDigest;
     }
 
     // 生成详细参数摘要的方法，可以使用自定义摘要算法或简单的字符串拼接
-    private String generateArgsDigest(Object[] args) {
+    public String generateArgsDigest(Object[] args) {
         // 可以根据实际需求生成详细摘要，例如用某种哈希算法或简单的字符串拼接
         return String.join(":", Arrays.stream(args)
                 .map(Object::toString)
@@ -168,7 +168,7 @@ public class ExecuteSaveAspect {
     }
 
     // 生成简单参数摘要的方法，可以使用自定义的快速摘要算法
-    private String generateSimpleArgsDigest(Object[] args) {
+    public String generateSimpleArgsDigest(Object[] args) {
         // 将所有参数拼接成一个字符串并生成MD5摘要
         String input = String.join(",", Arrays.stream(args)
                 .map(Object::toString)
